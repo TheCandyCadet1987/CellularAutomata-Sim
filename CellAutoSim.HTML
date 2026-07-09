@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cellular Automata Simulator</title>
+<link rel="stylesheet" href="style.css">
+</head><body>
+<div id="stats">
+Generation:
+<span id="generation">0</span>
+•
+Living Cells:
+<span id="aliveCount">0</span>
+</div>
+<div id="controls">
+<label>GridWidth
+<input id="width" type="number" value="80" min="5" max="400">
+</label>
+<label>GridHeight
+<input id="height" type="number" value="60" min="5" max="400">
+</label>
+<label>Cell Size
+<input id="cellSize" type="number" value="10" min="2" max="30">
+</label>
+<label>Ruleset
+<input id="rule" value="B3/S23">
+</label>
+<button id="resize">Resize</button>
+<button id="random">Random</button>
+<button id="clear">Clear</button>
+<button id="step">Step</button>
+<button id="play">Play</button>
+<label>
+Speed
+<input id="speed" type="range" min="1" max="60" value="10">
+</label>
+</div>
+<div style="display:flex; gap:25px; align-items:flex-start;">
+    <div class="canvas-frame">
+        <canvas id="canvas"></canvas>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:25px;">
+        <div class="canvas-frame">
+            <canvas id="graph" width="450" height="300"></canvas>
+        </div>
+        <div id="rulesetPanel">
+            <h3>AvCycle by Rules</h3>
+            <div id="rulesetList">
+                No cycles recorded
+            </div>
+        </div>
+    </div>
+</div>
+<div id="stats">
+    Generation:
+    <span id="generation">0</span>
+    •
+    Living Cells:
+    <span id="aliveCount">0</span>
+    •
+    Cycle:
+    <span id="cycleStatus">Searching...</span>
+</div>
+<script>
+const canvas=document.getElementById("canvas");
+const ctx=canvas.getContext("2d");
+const graph=document.getElementById("graph");
+const graphCtx=graph.getContext("2d");
+let populationHistory=[];
+let rulesetCycles = {};
+let grid=[];
+let cols=80;
+let rows=60;
+let cellSize=10;
+let hoverX = -1;
+let hoverY = -1;
+let playing=false;
+let timer=null;
+let born=[3];
+let survive=[2,3];
+let generation = 0;
+let history = new Map();
+const cycleStatus = document.getElementById("cycleStatus");
+const generationElement = document.getElementById("generation");
+const aliveCount = document.getElementById("aliveCount");
+function pauseSimulation(){
+    playing = false;
+    document.getElementById("play").textContent = "Play";
+    clearInterval(timer);}
+function updateRulesetPanel(){
+    const list = document.getElementById("rulesetList");
+    const keys = Object.keys(rulesetCycles);
+    if(keys.length === 0){
+        list.innerHTML="No cycles recorded";
+        return;}
+    list.innerHTML = `
+        <div class="ruleset-row">
+            <strong>Ruleset</strong>
+            <strong>To Cycle</strong>
+            <strong>Cycle Length</strong>
+        </div>
+    `;
+    keys.forEach(rule=>{
+        let data = rulesetCycles[rule];
+        let average =
+            data.totalCycleLength /
+            data.cycleCount;
+        let row=document.createElement("div");
+        row.className="ruleset-row";
+        row.innerHTML=`
+            <span>${rule}</span>
+            <span>
+                ${data.firstCycleGeneration}
+            </span>
+            <span class="ruleset-value">
+                ${average.toFixed(2)}
+            </span>
+        `;
+        list.appendChild(row);
+    });}
+function drawGraph(){
+    graphCtx.fillStyle="#070c18";
+    graphCtx.fillRect(
+        0,
+        0,
+        graph.width,
+        graph.height
+    );
+    graphCtx.strokeStyle="#777";
+    graphCtx.lineWidth=1;
+    graphCtx.beginPath();
+    graphCtx.moveTo(50,10);
+    graphCtx.lineTo(50,260);
+    graphCtx.lineTo(390,260);
+    graphCtx.stroke();
+    if(populationHistory.length < 2)
+        return;
+    let maxPopulation = Math.max(...populationHistory);
+    if(maxPopulation < 1)
+        maxPopulation = 1;
+    graphCtx.strokeStyle="#66ff66";
+    graphCtx.lineWidth=2;
+    graphCtx.beginPath();
+    populationHistory.forEach((value,index)=>{
+        let x = 50 +
+            (index/(populationHistory.length-1))*350;
+        let y = 260 -
+            (value/maxPopulation)*240;
+        if(index===0)
+            graphCtx.moveTo(x,y);
+        else
+            graphCtx.lineTo(x,y);
+    });
+    graphCtx.stroke();
+    graphCtx.fillStyle="white";
+    graphCtx.font="16px Arial";
+    graphCtx.fillText(
+        "Generation",
+        160,
+        290
+    );
+graphCtx.save();
+graphCtx.fillStyle = "white";
+graphCtx.font = "bold 16px Arial";
+graphCtx.textAlign = "center";
+graphCtx.textBaseline = "middle";
+graphCtx.translate(430,135);
+graphCtx.rotate(Math.PI / 2);
+graphCtx.fillText(
+    "Living Cells",
+    0,
+    0);
+graphCtx.restore();
+graphCtx.fillStyle="#aaa";
+graphCtx.strokeStyle="rgba(255,255,255,.15)";
+graphCtx.font="12px Arial";
+let steps = 4;
+for(let i = 0; i <= steps; i++){
+    let value = Math.round(
+        (maxPopulation / steps) * i
+    );
+    let y = 260 - 
+        (i / steps) * 240;
+    graphCtx.beginPath();
+    graphCtx.moveTo(50,y);
+    graphCtx.lineTo(400,y);
+    graphCtx.stroke();
+    graphCtx.fillStyle="#aaa";
+    graphCtx.fillText(
+        value,
+        18,
+        y + 4
+    );
+}
+}
+function parseRule(str){
+    str=str.toUpperCase().replace(/\s/g,"");
+    let b=str.match(/B:?([0-8]+)/);
+    let s=str.match(/S:?([0-8]+)/);
+    born=b?b[1].split("").map(Number):[3];
+    survive=s?s[1].split("").map(Number):[2,3];
+}
+function gridHash(){
+    let hash="";
+    for(let y=0;y<rows;y++){
+        hash += grid[y].join("");
+    }
+    return hash;
+}
+function checkCycle(){
+    let hash = gridHash();
+    if(history.has(hash)){
+        let previousGeneration = history.get(hash);
+        let cycleLength = generation - previousGeneration;
+        cycleStatus.textContent =
+    "Found (" + cycleLength + " period)";
+let ruleName =
+    document.getElementById("rule").value
+    .toUpperCase()
+    .replace(/\s/g,"");
+if(!rulesetCycles[ruleName]){
+    rulesetCycles[ruleName]={
+        totalCycleLength:0,
+        cycleCount:0,
+        firstCycleGeneration:generation
+    };
+}
+rulesetCycles[ruleName].totalCycleLength += cycleLength;
+rulesetCycles[ruleName].cycleCount++;
+updateRulesetPanel();
+return true;
+    }
+    history.set(hash,generation);
+    cycleStatus.textContent="Searching...";
+    return false;
+}
+parseRule(document.getElementById("rule").value);
+function makeGrid(){
+    grid=[];
+    for(let y=0;y<rows;y++){
+        let r=[];
+        for(let x=0;x<cols;x++)
+            r.push(0);
+        grid.push(r);
+    }
+    resizeCanvas();
+}
+function resizeCanvas(){
+    canvas.width=cols*cellSize;
+    canvas.height=rows*cellSize;
+    draw();
+}
+canvas.addEventListener("mousemove", e => {
+    const rect = canvas.getBoundingClientRect();
+    hoverX = Math.floor((e.clientX - rect.left) / cellSize);
+    hoverY = Math.floor((e.clientY - rect.top) / cellSize);
+    draw();
+});
+canvas.addEventListener("mouseleave", () => {
+    hoverX = -1;
+    hoverY = -1;
+    draw();
+});
+makeGrid();
+function draw(){
+    ctx.fillStyle="#111";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    for(let y=0;y<rows;y++){
+        for(let x=0;x<cols;x++){
+            if(grid[y][x]){
+                ctx.fillStyle="#66ff66";
+                ctx.fillRect(
+                    x*cellSize,
+                    y*cellSize,
+                    cellSize,
+                    cellSize
+                );
+            }
+            ctx.strokeStyle="rgba(255,255,255,.06)";
+            ctx.strokeRect(
+                x*cellSize,
+                y*cellSize,
+                cellSize,
+                cellSize
+            );
+        }
+    }
+	if (hoverX >= 0 && hoverY >= 0) {
+    ctx.fillStyle = "rgba(255,0,0,0.25)";
+    for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0)
+                continue;
+            const xx = (hoverX + dx + cols) % cols;
+            const yy = (hoverY + dy + rows) % rows;
+            ctx.fillRect(
+                xx * cellSize,
+                yy * cellSize,
+                cellSize,
+                cellSize
+            );
+        }
+    }
+    ctx.strokeStyle = "yellow";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+        hoverX * cellSize + 1,
+        hoverY * cellSize + 1,
+        cellSize - 2,
+        cellSize - 2
+    );
+}
+}
+function neighbors(x,y){
+    let n=0;
+    for(let dy=-1;dy<=1;dy++){
+        for(let dx=-1;dx<=1;dx++){
+            if(dx===0 && dy===0) continue;
+            let xx=(x+dx+cols)%cols;
+            let yy=(y+dy+rows)%rows;
+            n+=grid[yy][xx];
+        }
+    }
+    return n;
+}
+function resetGeneration() {
+    generation = 0;
+    generationElement.textContent = generation;
+    populationHistory=[];
+drawGraph();
+}
+function step(){
+    let next=[];
+    for(let y=0;y<rows;y++){
+        next[y]=[];
+        for(let x=0;x<cols;x++){
+            let alive=grid[y][x];
+            let n=neighbors(x,y);
+            if(alive){
+                next[y][x]=survive.includes(n)?1:0;
+            }else{
+                next[y][x]=born.includes(n)?1:0;
+            }
+        }
+    }
+    grid = next;
+    generation++;
+    let alive = 0;
+    for (let row of grid)
+        for (let cell of row)
+            alive += cell;
+    generationElement.textContent = generation;
+    aliveCount.textContent = alive;
+    populationHistory.push(alive);
+if(populationHistory.length > 200){
+    populationHistory.shift();
+}
+drawGraph();
+    if(checkCycle()){
+    pauseSimulation();
+}
+draw();
+}
+canvas.addEventListener("mousedown",e=>{
+    const rect=canvas.getBoundingClientRect();
+    const x=Math.floor((e.clientX-rect.left)/cellSize);
+    const y=Math.floor((e.clientY-rect.top)/cellSize);
+    grid[y][x]^=1;
+history.clear();
+history.set(gridHash(), generation);
+cycleStatus.textContent="Searching...";
+    draw();
+});
+document.getElementById("clear").onclick = () => {
+    resetGeneration();
+    for(let y=0;y<rows;y++)
+        for(let x=0;x<cols;x++)
+            grid[y][x]=0;
+    updateStats();
+    draw();
+};
+document.getElementById("random").onclick=()=>{
+    resetGeneration();
+    for(let y=0;y<rows;y++)
+        for(let x=0;x<cols;x++)
+            grid[y][x]=Math.random()>0.7?1:0;
+    draw();
+};
+document.getElementById("clear").onclick=()=>{
+        resetGeneration();
+    for(let y=0;y<rows;y++)
+        for(let x=0;x<cols;x++)
+            grid[y][x]=0;
+    draw();
+};
+document.getElementById("step").onclick=step;
+document.getElementById("play").onclick=()=>{
+    playing=!playing;
+    document.getElementById("play").textContent=
+        playing?"Pause":"Play";
+    if(playing){
+        timer=setInterval(step,
+            1000/document.getElementById("speed").value);
+    }else{
+        clearInterval(timer);
+    }
+};
+document.getElementById("speed").oninput=()=>{
+    if(playing){
+        clearInterval(timer);
+        timer=setInterval(step,
+            1000/document.getElementById("speed").value);
+    }
+};
+document.getElementById("resize").onclick=()=>{
+    cols=parseInt(document.getElementById("width").value);
+    rows=parseInt(document.getElementById("height").value);
+    cellSize=parseInt(document.getElementById("cellSize").value);
+    parseRule(document.getElementById("rule").value);
+    makeGrid();
+};
+document.getElementById("rule").addEventListener("change",()=>{
+    parseRule(document.getElementById("rule").value);
+});
+draw();
+drawGraph();
+</script>
+</body>
+</html>
